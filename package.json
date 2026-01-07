@@ -1,0 +1,27 @@
+{
+  "name": "vro-action-extractor",
+  "version": "1.0.0",
+  "description": "CLI tool to extract Scriptable Actions from vRO Workflows (.xml), Packages (.package), and Folder structures (data).",
+  "main": "vro-action-extractor.js",
+  "bin": {
+    "vro-extract": "vro-action-extractor.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "vro",
+    "vrealize-orchestrator",
+    "workflow",
+    "converter",
+    "xml",
+    "javascript"
+  ],
+  "author": "Mayank Goyal <mayankgoyalmax@gmail.com>",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "xml2js": "^0.6.2"
+  }
+}

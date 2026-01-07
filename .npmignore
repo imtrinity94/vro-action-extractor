@@ -1,0 +1,12 @@
+Sample Workflow XMLs/
+output_*/
+.DS_Store
+node_modules/
+.git/
+.github/
+.vscode/
+*.log
+Extracted_Actions/
+*.tgz
+*.xml
+*.package
