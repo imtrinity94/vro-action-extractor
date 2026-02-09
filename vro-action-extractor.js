@@ -341,7 +341,7 @@ async function processWorkflowObj(workflowObj, outputDir) {
 
 // Convert a single XML file (standard mode)
 async function convertWorkflow(filePath, outputRoot) {
-    console.log(`Processing file: ${filePath}`);
+    // console.log(`Processing file: ${filePath}`); // Too verbose if processing many files
     try {
         const workflowObj = await loadXml(filePath);
 
@@ -359,6 +359,8 @@ async function convertWorkflow(filePath, outputRoot) {
             const actionRoot = workflowObj['dunes-script-module'];
             wfName = actionRoot['name'] || actionRoot['@']?.['name'] || 'Unnamed_Action';
             actionGroup = actionRoot.group || actionRoot['@']?.group || '';
+        } else {
+            return { success: false, reason: `Unknown root element: ${rootKey}` };
         }
 
         // Handle CDATA
@@ -375,35 +377,43 @@ async function convertWorkflow(filePath, outputRoot) {
             outputDir = path.join(outputRoot, 'Workflows', saneWfName);
         }
 
-        console.log(`Extracting to: ${outputDir}`);
+        console.log(`Extracting ${isAction ? 'Action' : 'Workflow'}: "${wfName}" -> ${outputDir}`);
         const count = await processWorkflowObj(workflowObj, outputDir);
-        console.log(`Done. Extracted ${count} scripts.`);
+        return { success: true, count: count, name: wfName };
+
     } catch (err) {
-        console.error("Error converting workflow:", err);
+        // console.error("Error converting workflow:", err);
+        return { success: false, reason: err.message };
     }
 }
 
 // Convert a .package (zip) file
 async function convertPackage(filePath) {
     console.log(`Processing Package: ${filePath} ...`);
-    try {
-        // Zip processing is synchronous in adm-zip usually, but we can treat buffers.
-        const zip = new AdmZip(filePath);
-        const zipEntries = zip.getEntries(); // an array of ZipEntry records
 
-        let totalScripts = 0;
+    const stats = { found: 0, extracted: 0, skipped: 0, errors: [] };
+
+    try {
+        const zip = new AdmZip(filePath);
+        const zipEntries = zip.getEntries();
 
         for (const entry of zipEntries) {
-            // Looking for elements/[UUID]/data
-            // Pattern: elements/UUID/data
             const parts = entry.entryName.split('/');
-            // Expecting: elements, UUID, data (3 parts) roughly, or just ending in /data and inside elements
+            // Pattern: elements/UUID/data
             if (parts.length >= 3 && parts[0] === 'elements' && parts[parts.length - 1] === 'data') {
+                stats.found++;
                 try {
                     const buffer = entry.getData();
-                    const workflowObj = await parseXmlBuffer(buffer);
+                    if (!buffer || buffer.length === 0) throw new Error("Empty buffer");
 
-                    // Check if it's a workflow OR Action
+                    let workflowObj;
+                    try {
+                        workflowObj = await parseXmlBuffer(buffer);
+                    } catch (e) {
+                        // Likely not XML, e.g. binary data or signature file
+                        throw new Error(`Invalid XML: ${e.message}`);
+                    }
+
                     const rootKey = Object.keys(workflowObj)[0];
                     let wfName = 'Unnamed';
                     let isAction = false;
@@ -418,40 +428,48 @@ async function convertPackage(filePath) {
                         wfName = actionRoot['name'] || actionRoot['@']?.['name'] || 'Unnamed_Action';
                         actionGroup = actionRoot.group || actionRoot['@']?.group || '';
                     } else {
-                        continue; // Not a workflow or action
+                        // Skip silently or log debug
+                        continue;
                     }
 
-                    // Handle CDATA object in xml2js ({ _: "Name" })
-                    if (typeof wfName === 'object' && wfName._) {
-                        wfName = wfName._;
-                    }
-                    if (typeof actionGroup === 'object' && actionGroup._) {
-                        actionGroup = actionGroup._;
-                    }
+                    if (typeof wfName === 'object' && wfName._) wfName = wfName._;
+                    if (typeof actionGroup === 'object' && actionGroup._) actionGroup = actionGroup._;
 
                     const saneWfName = sanitizeFilename(wfName);
                     const packageDir = path.dirname(filePath);
                     let outputDir;
 
                     if (isAction) {
-                        // Use Group for structure, e.g. com.vmware.library -> com/vmware/library
                         const groupPath = actionGroup ? actionGroup.replace(/\./g, path.sep) : 'Uncategorized';
                         outputDir = path.join(packageDir, 'Actions', groupPath);
                     } else {
-                        // Workflows get their own folder
                         outputDir = path.join(packageDir, 'Workflows', saneWfName);
                     }
 
-                    console.log(`Found ${isAction ? 'Action' : 'Workflow'} in package: "${wfName}"${isAction ? ` (Group: ${actionGroup})` : ''}. Extracting to: ${outputDir}`);
-
+                    console.log(`[Extracting] ${isAction ? 'Action' : 'Workflow'}: "${wfName}"`);
                     const count = await processWorkflowObj(workflowObj, outputDir);
-                    totalScripts += count;
+                    if (count > 0) stats.extracted += count;
+                    else stats.skipped++;
+
                 } catch (err) {
-                    console.error(`Failed to process entry ${entry.entryName}:`, err);
+                    // stats.errors.push({ entry: entry.entryName, error: err.message });
+                    // Only log if it's a "real" error, not just "Non-whitespace before first tag" for known junk
+                    if (!err.message.includes('Non-whitespace before first tag')) {
+                        console.error(`  [Warning] ${entry.entryName}: ${err.message}`);
+                        stats.errors.push(`${entry.entryName}: ${err.message}`);
+                    }
                 }
             }
         }
-        console.log(`Package processing complete. Total scripts extracted: ${totalScripts}`);
+
+        console.log(`\n--- Package Summary for ${path.basename(filePath)} ---`);
+        console.log(`Found Elements: ${stats.found}`);
+        console.log(`Extracted Scripts: ${stats.extracted}`);
+        if (stats.errors.length > 0) {
+            console.log(`Errors: ${stats.errors.length}`);
+            // stats.errors.forEach(e => console.log(` - ${e}`));
+        }
+        console.log('--------------------------------------------------\n');
 
     } catch (err) {
         console.error("Error processing package:", err);
@@ -472,6 +490,11 @@ async function findTargets(dir) {
     let results = [];
     const list = await fs.readdir(dir);
     for (const file of list) {
+        // Skip signature folders to avoid processing non-XML data
+        if (file.toLowerCase() === 'signatures') {
+            continue;
+        }
+
         const filePath = path.join(dir, file);
         const stat = await fs.stat(filePath);
         if (stat && stat.isDirectory()) {
@@ -506,33 +529,76 @@ async function main() {
     try {
         const stat = await fs.stat(inputPath);
 
+        // Single package file
+        if (!stat.isDirectory() && inputPath.toLowerCase().endsWith('.package')) {
+            await convertPackage(inputPath);
+            return;
+        }
+
+        // Processing directory or single XML
+        let targets = [];
         if (stat.isDirectory()) {
             console.log(`Scanning directory: ${inputPath} ...`);
-            const targetFiles = await findTargets(inputPath);
-            console.log(`Found ${targetFiles.length} target files (.xml, .package or 'data').`);
-
-            for (const file of targetFiles) {
-                if (file.toLowerCase().endsWith('.package')) {
-                    await convertPackage(file);
-                } else {
-                    // Pass the parent directory (or the folder containing 'data') as the root
-                    // convertWorkflow will append Workflows/Name or Actions/Group
-                    await convertWorkflow(file, path.dirname(file));
-                }
-            }
+            targets = await findTargets(inputPath);
+            console.log(`Found ${targets.length} target files (.xml, .package or 'data').`);
         } else {
-            // Single file mode
-            if (inputPath.toLowerCase().endsWith('.package')) {
-                await convertPackage(inputPath);
+            targets = [inputPath];
+        }
+
+        const taskStats = {
+            processed: 0,
+            succeeded: 0,
+            failed: 0,
+            extractedScripts: 0,
+            skipped: 0
+        };
+
+        for (const file of targets) {
+            if (file.toLowerCase().endsWith('.package')) {
+                await convertPackage(file);
+                // We don't aggregate package stats into taskStats easily because convertPackage wraps its own, 
+                // but that's acceptable.
+                continue;
+            }
+
+            // Determine output root
+            let outputRoot;
+            if (stat.isDirectory()) {
+                // Pass the parent directory (or the folder containing 'data') as the root
+                outputRoot = path.dirname(file);
             } else {
-                let outputRoot = args[1];
-                if (!outputRoot) {
-                    outputRoot = path.dirname(inputPath);
-                    // For 'data' files, usually we want to stay relative to them.
+                outputRoot = args[1];
+                if (!outputRoot) outputRoot = path.dirname(inputPath);
+            }
+
+            const result = await convertWorkflow(file, outputRoot);
+            taskStats.processed++;
+
+            if (result && result.success) {
+                taskStats.succeeded++;
+                taskStats.extractedScripts += result.count;
+                if (result.count === 0) taskStats.skipped++;
+            } else {
+                taskStats.failed++;
+                // Optional: log failure reason if not already logged? 
+                // It is logged in convertWorkflow now as console.error? No, I commented it out there.
+                // Let's log it here for visibility
+                // But filtering common non-errors
+                if (result && result.reason && !result.reason.includes('Non-whitespace before first tag')) {
+                    console.log(`[Failed] ${path.basename(file)}: ${result.reason}`);
                 }
-                await convertWorkflow(inputPath, outputRoot);
             }
         }
+
+        if (targets.length > 0 && !targets[0].toLowerCase().endsWith('.package')) {
+            console.log(`\n--- Execution Summary ---`);
+            console.log(`Files Processed:   ${taskStats.processed}`);
+            console.log(`Successful:        ${taskStats.succeeded}`);
+            console.log(`Failed/Skipped:    ${taskStats.failed}`);
+            console.log(`Scripts Extracted: ${taskStats.extractedScripts}`);
+            console.log('-------------------------\n');
+        }
+
     } catch (err) {
         console.error("Fatal Error:", err.message);
         if (err.code === 'ENOENT') {
