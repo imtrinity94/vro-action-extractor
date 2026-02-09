@@ -1,6 +1,6 @@
 {
   "name": "vro-action-extractor",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "CLI tool to extract Scriptable Actions from vRO Workflows (.xml), Packages (.package), and Folder structures (data).",
   "main": "vro-action-extractor.js",
   "bin": {
