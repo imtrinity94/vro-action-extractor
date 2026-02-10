@@ -371,8 +371,8 @@ async function convertWorkflow(filePath, outputRoot) {
         let outputDir;
 
         if (isAction) {
-            const groupPath = actionGroup ? actionGroup.replace(/\./g, path.sep) : 'Uncategorized';
-            outputDir = path.join(outputRoot, 'Actions', groupPath);
+            // Flatten Actions: always extract to Actions/ folder directly
+            outputDir = path.join(outputRoot, 'Actions');
         } else {
             outputDir = path.join(outputRoot, 'Workflows', saneWfName);
         }
@@ -440,9 +440,10 @@ async function convertPackage(filePath) {
                     let outputDir;
 
                     if (isAction) {
-                        const groupPath = actionGroup ? actionGroup.replace(/\./g, path.sep) : 'Uncategorized';
-                        outputDir = path.join(packageDir, 'Actions', groupPath);
+                        // Flatten Actions: always extract to Actions/ folder directly
+                        outputDir = path.join(packageDir, 'Actions');
                     } else {
+                        // Workflows get their own folder
                         outputDir = path.join(packageDir, 'Workflows', saneWfName);
                     }
 
